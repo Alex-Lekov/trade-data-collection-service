@@ -31,7 +31,27 @@ To stop the application services, press Ctrl+C in the terminal where you started
 ### Customizing the Configuration
 You can customize the services by modifying the docker-compose.yaml file. For example, you can change the image names or build contexts, adjust the container volumes, or set environment variables. Please refer to the [Docker Compose documentation](https://docs.docker.com/compose/) for more information on the available configuration options.
 
-# Structure
-The data_collector.py file contains the code for collecting candle data from Binance futures and storing it in ClickHouse. The create_database_if_not_exists() and create_table_if_not_exists() functions are used to create the necessary database and table. The candle_callback() function is used to store the candle data in the table.
 
-The data_quality_check.py file contains the code for checking the data quality of the candle data in ClickHouse. The data_quality_check() function is used to calculate the percentage change between the open and close prices of each candle and store the results in a new table.
+# Project Structure
+
+The project has the following structure:
+
+```
+data-collection-service/
+├── app/
+│   ├── config_sample.yaml
+│   ├── data_collector.py
+│   └── data_quality_check.py
+├── docker-compose.yaml
+└── README.md
+```
+
+- The app directory contains the configuration file and the Python scripts for the data collector and data quality check services.
+- The docker-compose.yaml file defines the services and their dependencies.
+
+
+### data_collector.py
+The data_collector.py script collects candle data from Binance futures and stores it in ClickHouse.
+
+### data_quality_check.py
+The data_quality_check.py script checks the data quality of the candle data in ClickHouse. 
