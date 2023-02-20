@@ -130,3 +130,5 @@ dmypy.json
 app/config.yaml
 data/*
 data
+.vscode/settings.json
+.vscode

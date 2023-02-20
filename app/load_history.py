@@ -58,13 +58,13 @@ def candle_save(candle, receipt_timestamp: datetime.datetime) -> None:
     
     query = '''
         INSERT INTO binance_data.candles 
-        (exchange, symbol, start, stop, interval, trades, open, close, high, low, volume, timestamp, receipt_timestamp)
+        (exchange, symbol, start, stop, close_unixtime, interval, trades, open, close, high, low, volume, timestamp, receipt_timestamp)
         VALUES 
-        (%(exchange)s, %(symbol)s, %(start)s, %(stop)s, %(interval)s, %(trades)s, %(open)s, %(close)s, %(high)s, %(low)s, %(volume)s, %(timestamp)s, %(receipt_timestamp)s)
+        (%(exchange)s, %(symbol)s, %(start)s, %(stop)s, %(close_unixtime)s, %(interval)s, %(trades)s, %(open)s, %(close)s, %(high)s, %(low)s, %(volume)s, %(timestamp)s, %(receipt_timestamp)s)
     '''
 
     with clickhouse_driver.Client(host='clickhouse', port=9000) as ch:
-        ch.execute(query, {'exchange': exchange, 'symbol': symbol, 'start': start, 'stop': stop, 'interval': interval, 'trades': trades, 'open': open_price, 'close': close_price, 'high': high_price, 'low': low_price, 'volume': volume, 'timestamp': timestamp, 'receipt_timestamp': receipt_timestamp})
+        ch.execute(query, {'exchange': exchange, 'symbol': symbol, 'start': start, 'stop': stop, 'close_unixtime': candle.stop, 'interval': interval, 'trades': trades, 'open': open_price, 'close': close_price, 'high': high_price, 'low': low_price, 'volume': volume, 'timestamp': timestamp, 'receipt_timestamp': receipt_timestamp})
 
 
 def get_symbols_last_date() -> dict:

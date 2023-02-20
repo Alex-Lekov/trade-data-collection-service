@@ -40,6 +40,7 @@ def create_table_if_not_exists() -> None:
             symbol String,
             start DateTime,
             stop DateTime,
+            close_unixtime Float32,
             interval String,
             trades Int32,
             open Float32,
@@ -84,13 +85,13 @@ async def candle_callback(candle, receipt_timestamp) -> None:
     
     query = '''
         INSERT INTO binance_data.candles 
-        (exchange, symbol, start, stop, interval, trades, open, close, high, low, volume, timestamp, receipt_timestamp)
+        (exchange, symbol, start, stop, close_unixtime, interval, trades, open, close, high, low, volume, timestamp, receipt_timestamp)
         VALUES 
-        (%(exchange)s, %(symbol)s, %(start)s, %(stop)s, %(interval)s, %(trades)s, %(open)s, %(close)s, %(high)s, %(low)s, %(volume)s, %(timestamp)s, %(receipt_timestamp)s)
+        (%(exchange)s, %(symbol)s, %(start)s, %(stop)s, %(close_unixtime)s, %(interval)s, %(trades)s, %(open)s, %(close)s, %(high)s, %(low)s, %(volume)s, %(timestamp)s, %(receipt_timestamp)s)
     '''
 
     ch = AIOClickHouseClient(host='clickhouse', port=9000,)
-    await ch.execute(query, {'exchange': exchange, 'symbol': symbol, 'start': start, 'stop': stop, 'interval': interval, 'trades': trades, 'open': open_price, 'close': close_price, 'high': high_price, 'low': low_price, 'volume': volume, 'timestamp': timestamp, 'receipt_timestamp': receipt_timestamp})
+    await ch.execute(query, {'exchange': exchange, 'symbol': symbol, 'start': start, 'stop': stop, 'close_unixtime': candle.stop, 'interval': interval, 'trades': trades, 'open': open_price, 'close': close_price, 'high': high_price, 'low': low_price, 'volume': volume, 'timestamp': timestamp, 'receipt_timestamp': receipt_timestamp})
 
 
 async def symbols_callback(candle, receipt_timestamp):

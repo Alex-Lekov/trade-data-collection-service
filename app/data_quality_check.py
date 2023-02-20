@@ -56,6 +56,7 @@ if __name__ == '__main__':
                 'symbol',
                 'start',
                 'stop',
+                'close_unixtime',
                 'interval',
                 'trades',
                 'open',
