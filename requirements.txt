@@ -1,0 +1,5 @@
+cryptofeed
+loguru
+clickhouse-driver
+aioch
+pandas
