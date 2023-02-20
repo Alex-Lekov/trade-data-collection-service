@@ -20,6 +20,16 @@ services:
       - clickhouse
     command: python3 -u ./data_quality_check.py
 
+  load_history:
+    build: .
+    image: load_history:latest
+    #restart: always
+    volumes:
+      - ./app:/app
+    depends_on:
+      - clickhouse
+    command: python3 -u ./load_history.py
+
   clickhouse:
     image: yandex/clickhouse-server
     restart: always
