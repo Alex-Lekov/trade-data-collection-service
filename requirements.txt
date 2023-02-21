@@ -3,3 +3,4 @@ loguru
 clickhouse-driver
 aioch
 pandas
+tqdm

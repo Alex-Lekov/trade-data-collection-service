@@ -56,6 +56,7 @@ if __name__ == '__main__':
                 'symbol',
                 'start',
                 'stop',
+                'close_unixtime',
                 'interval',
                 'trades',
                 'open',
@@ -64,6 +65,7 @@ if __name__ == '__main__':
                 'low',
                 'volume',
                 'timestamp',
+                'receipt_timestamp',
                 ]
             df = pd.DataFrame(result, columns=columns)
             df.sort_values(by='stop', ascending=False, inplace=True)

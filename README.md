@@ -41,7 +41,8 @@ data-collection-service/
 ├── app/
 │   ├── config_sample.yaml
 │   ├── data_collector.py
-│   └── data_quality_check.py
+│   ├── data_quality_check.py
+|   └── load_history.py
 ├── docker-compose.yaml
 └── README.md
 ```
@@ -55,3 +56,7 @@ The data_collector.py script collects candle data from Binance futures and store
 
 ### data_quality_check.py
 The data_quality_check.py script checks the data quality of the candle data in ClickHouse. 
+
+### load_history.py
+This is a script that collects market data from the Binance exchange and stores it in a database called ClickHouse.
+The script is also configured using a file named "config.yaml", which contains settings such as the start date for collecting data and whether or not to load historical data. 

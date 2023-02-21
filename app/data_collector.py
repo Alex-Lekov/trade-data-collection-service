@@ -40,6 +40,7 @@ def create_table_if_not_exists() -> None:
             symbol String,
             start DateTime,
             stop DateTime,
+            close_unixtime Float32,
             interval String,
             trades Int32,
             open Float32,
@@ -47,7 +48,8 @@ def create_table_if_not_exists() -> None:
             high Float32,
             low Float32,
             volume Float64,
-            timestamp DateTime
+            timestamp DateTime,
+            receipt_timestamp DateTime
         ) ENGINE = MergeTree()
         PARTITION BY toYYYYMMDD(stop)
         ORDER BY (symbol, interval, stop)
@@ -79,16 +81,17 @@ async def candle_callback(candle, receipt_timestamp) -> None:
     volume = Decimal(candle.volume)
     #closed = (candle.closed)
     timestamp = datetime.fromtimestamp(candle.timestamp)
+    #receipt_timestamp = receipt_timestamp
     
     query = '''
         INSERT INTO binance_data.candles 
-        (exchange, symbol, start, stop, interval, trades, open, close, high, low, volume, timestamp)
+        (exchange, symbol, start, stop, close_unixtime, interval, trades, open, close, high, low, volume, timestamp, receipt_timestamp)
         VALUES 
-        (%(exchange)s, %(symbol)s, %(start)s, %(stop)s, %(interval)s, %(trades)s, %(open)s, %(close)s, %(high)s, %(low)s, %(volume)s, %(timestamp)s)
+        (%(exchange)s, %(symbol)s, %(start)s, %(stop)s, %(close_unixtime)s, %(interval)s, %(trades)s, %(open)s, %(close)s, %(high)s, %(low)s, %(volume)s, %(timestamp)s, %(receipt_timestamp)s)
     '''
 
     ch = AIOClickHouseClient(host='clickhouse', port=9000,)
-    await ch.execute(query, {'exchange': exchange, 'symbol': symbol, 'start': start, 'stop': stop, 'interval': interval, 'trades': trades, 'open': open_price, 'close': close_price, 'high': high_price, 'low': low_price, 'volume': volume, 'timestamp': timestamp})
+    await ch.execute(query, {'exchange': exchange, 'symbol': symbol, 'start': start, 'stop': stop, 'close_unixtime': candle.stop, 'interval': interval, 'trades': trades, 'open': open_price, 'close': close_price, 'high': high_price, 'low': low_price, 'volume': volume, 'timestamp': timestamp, 'receipt_timestamp': receipt_timestamp})
 
 
 async def symbols_callback(candle, receipt_timestamp):
