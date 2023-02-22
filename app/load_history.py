@@ -3,7 +3,7 @@ from loguru import logger
 import sys
 import datetime
 import yaml
-from tqdm import tqdm
+from progressbar import progressbar
 from decimal import Decimal
 
 from cryptofeed.exchanges import BinanceFutures
@@ -21,7 +21,7 @@ logger.add(
 )
 
 # Add a file sink with DEBUG level and compression
-logger.add("log.log", rotation="1 MB", level="DEBUG", compression="zip")
+logger.add("./logs/load_history.log", rotation="1 MB", level="DEBUG", compression="zip")
 
 ####### Load Config #########################################################
 
@@ -75,7 +75,7 @@ def get_symbols_last_date() -> dict:
 
     """
     with clickhouse_driver.Client(host='clickhouse', port=9000) as ch:
-        result = ch.execute('SELECT symbol, MIN(stop) as min_date FROM binance_data.candles GROUP BY symbol')
+        result = ch.execute('SELECT symbol, MIN(stop) as min_date FROM binance_data.candles FINAL GROUP BY symbol')
     
     symbol_last_data_dict = {}
     for res in result:
@@ -87,21 +87,21 @@ def get_symbols_last_date() -> dict:
 
 if __name__ == '__main__':
     if LOAD_HISTORY:
-        logger.info(f'Delay start by 120sec so that BD are ready')
-        time.sleep(120)
+        logger.info(f'Delay start by 2000sec so that all are ready')
+        time.sleep(2000)
         logger.info(f'START HISTORY LOAD')
 
         # Get the last stop date for each symbol
         symbol_last_data_dict = get_symbols_last_date()
 
         # Loop through each symbol and load its history
-        for symbol, last_date in tqdm(symbol_last_data_dict.items()):
+        for symbol, last_date in progressbar(symbol_last_data_dict.items(), redirect_stdout=True):
             logger.info(f'Load history: {symbol}')
-            for data in tqdm(BinanceFutures().candles_sync(symbol, start=START_DATE, end=last_date)):
+            # Loop with unknown finite number of iterations
+            for data in BinanceFutures().candles_sync(symbol, start=START_DATE, end=last_date):
                 for row in data:
                     candle_save(row, datetime.datetime.now())
             logger.info(f'Finish load history: {symbol}')
-
         logger.info(f'ALL history is loaded!')
 
     else:

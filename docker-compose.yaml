@@ -3,7 +3,7 @@ services:
   data_collector:
     build: .
     image: data_collector:latest
-    #restart: always
+    restart: always
     volumes:
       - ./app:/app
     depends_on:

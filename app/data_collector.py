@@ -3,7 +3,6 @@ import sys
 from loguru import logger
 from cryptofeed import FeedHandler
 from decimal import Decimal
-#from cryptofeed.defines import BINANCE_FUTURES
 from cryptofeed.exchanges import BinanceFutures
 from cryptofeed.defines import CANDLES
 from datetime import datetime
@@ -23,7 +22,7 @@ logger.add(
     level=10,
 )
 
-logger.add("log.log", rotation="1 MB", level="DEBUG", compression="zip")
+logger.add("./logs/data_collector.log", rotation="1 MB", level="DEBUG", compression="zip")
 
 
 def create_database_if_not_exists() -> None:
@@ -50,9 +49,8 @@ def create_table_if_not_exists() -> None:
             volume Float64,
             timestamp DateTime,
             receipt_timestamp DateTime
-        ) ENGINE = MergeTree()
-        PARTITION BY toYYYYMMDD(stop)
-        ORDER BY (symbol, interval, stop)
+        ) ENGINE = ReplacingMergeTree(receipt_timestamp)
+        ORDER BY (symbol, interval, start)
     '''
     with clickhouse_driver.Client(host='clickhouse', port=9000) as ch:
         ch.execute(query)
@@ -119,14 +117,20 @@ if __name__ == '__main__':
 
         symbols = BinanceFutures.symbols()
         symbols = [symbol for symbol in symbols if "-USDT-PERP" in symbol]
+        logger.info(f'Add symbols: {len(symbols)}')
         
         callbacks = {CANDLES: candle_callback}
-        binance = BinanceFutures(symbols=symbols, channels=[CANDLES,], callbacks=callbacks)
-        logger.info(f'Add symbols: {len(symbols)}')
+        #binance = BinanceFutures(symbols=symbols, channels=[CANDLES,], callbacks=callbacks)
 
         f = FeedHandler()
         loop = asyncio.get_event_loop()
-        f.add_feed(binance)
+        #f.add_feed(binance)
+
+        # try fix websockets.exceptions.ConnectionClosedErrorr
+        for symbol in symbols:
+            logger.info(f'ADD {symbol} feed')
+            f.add_feed(BinanceFutures(symbols=[symbol,], channels=[CANDLES,], callbacks=callbacks))
+
         f.add_feed(BinanceFutures(symbols=symbols[:1], channels=[CANDLES,], callbacks={CANDLES: symbols_callback}))
         # Start the data collection
         f.run(start_loop=False)
