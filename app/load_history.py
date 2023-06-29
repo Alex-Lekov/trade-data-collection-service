@@ -91,17 +91,46 @@ if __name__ == '__main__':
         time.sleep(2000)
         logger.info(f'START HISTORY LOAD')
 
+        # start load top10 symbols
+        SYMBOLS_TYPE = '-USDT-PERP'
+        SYMBOLS = [
+            "BTC",
+            "ETH",
+            "BNB",
+            "ADA",
+            "XRP",
+            "MATIC",
+            "LTC",
+            "TRX",
+            "DOT",
+            "AVAX",
+            "LINK",
+            "ATOM",
+            "UNI",
+        ]
+        for symbol in SYMBOLS:
+            logger.info(f'Load top10 SYMBOLS history: {symbol} from {START_DATE}')
+            # Loop with unknown finite number of iterations
+            for data in BinanceFutures().candles_sync(symbol+SYMBOLS_TYPE, start=START_DATE):
+                for row in data:
+                    candle_save(row, datetime.datetime.now())
+            logger.info(f'Finish load top10 history: {symbol}')
+
         # Get the last stop date for each symbol
         symbol_last_data_dict = get_symbols_last_date()
 
         # Loop through each symbol and load its history
         for symbol, last_date in progressbar(symbol_last_data_dict.items(), redirect_stdout=True):
-            logger.info(f'Load history: {symbol}')
+            logger.info(f'Load history: {symbol} from {START_DATE} to {last_date}')
             # Loop with unknown finite number of iterations
-            for data in BinanceFutures().candles_sync(symbol, start=START_DATE, end=last_date):
-                for row in data:
-                    candle_save(row, datetime.datetime.now())
-            logger.info(f'Finish load history: {symbol}')
+            try:
+                for data in BinanceFutures().candles_sync(symbol, start=START_DATE, end=last_date):
+                    for row in data:
+                        candle_save(row, datetime.datetime.now())
+                logger.info(f'Finish load history: {symbol}')
+            except Exception as e:
+                logger.error(f'Error: {e}')
+                logger.error(f'Error: {symbol} from {START_DATE} to {last_date}')
         logger.info(f'ALL history is loaded!')
 
     else:
