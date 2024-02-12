@@ -152,7 +152,7 @@ def find_missing_dates(df: pd.DataFrame, symbol: str) -> list:
     missing_dates = list(data_tmp_rs[data_tmp_rs.isna().any(axis=1)].index)
     return missing_dates
 
-def check_missing_last_data(ch: clickhouse_driver.Client, depth: int = 1000) -> None:
+def check_missing_last_data(ch: clickhouse_driver.Client, depth: int = 3000) -> None:
     """
     Checks for missing data for the last `depth` records in ClickHouse.
     
@@ -167,6 +167,7 @@ def check_missing_last_data(ch: clickhouse_driver.Client, depth: int = 1000) -> 
     for symbol in df.symbol.unique():
         missing_dates = find_missing_dates(df, symbol)
         if len(missing_dates) > 0:
+            logger.info(f'Found missing data for {symbol}! Total: {len(missing_dates)}')
             load_missing_data(missing_dates, symbol)
 
 def check_missing_full_data() -> None:
@@ -196,7 +197,7 @@ def main():
         with clickhouse_driver.Client(host='clickhouse', port=9000) as ch:
             check_last_data_recording(ch)
             check_missing_last_data(ch)
-        time.sleep(90)
+        time.sleep(120)
 
 ####### Main #################################################################
 if __name__ == '__main__':

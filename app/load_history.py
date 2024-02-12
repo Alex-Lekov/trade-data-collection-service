@@ -6,7 +6,7 @@ import yaml
 from progressbar import progressbar
 from decimal import Decimal
 
-from cryptofeed.exchanges import BinanceFutures
+from cryptofeed.exchanges import Binance
 import clickhouse_driver
 
 ####### Logger Configuration #########################################################
@@ -91,8 +91,15 @@ if __name__ == '__main__':
         time.sleep(2000)
         logger.info(f'START HISTORY LOAD')
 
+        ####### LOAD CONFIG #########################################################
+        with open("config.yaml", 'r') as ymlfile:
+            config = yaml.load(ymlfile, Loader=yaml.SafeLoader)
+
+        SYMBOLS_TYPE = config['SYMBOLS_TYPE']
+        TIMEFRAME = config['TIMEFRAME']
+
         # start load top10 symbols
-        SYMBOLS_TYPE = '-USDT-PERP'
+        # SYMBOLS_TYPE = '-USDT-PERP'
         SYMBOLS = [
             "BTC",
             "ETH",
@@ -111,7 +118,7 @@ if __name__ == '__main__':
         for symbol in SYMBOLS:
             logger.info(f'Load top10 SYMBOLS history: {symbol} from {START_DATE}')
             # Loop with unknown finite number of iterations
-            for data in BinanceFutures().candles_sync(symbol+SYMBOLS_TYPE, start=START_DATE):
+            for data in Binance().candles_sync(symbol+SYMBOLS_TYPE, start=START_DATE, interval=TIMEFRAME):
                 for row in data:
                     candle_save(row, datetime.datetime.now())
             logger.info(f'Finish load top10 history: {symbol}')
@@ -124,7 +131,7 @@ if __name__ == '__main__':
             logger.info(f'Load history: {symbol} from {START_DATE} to {last_date}')
             # Loop with unknown finite number of iterations
             try:
-                for data in BinanceFutures().candles_sync(symbol, start=START_DATE, end=last_date):
+                for data in Binance().candles_sync(symbol, start=START_DATE, end=last_date, interval=TIMEFRAME):
                     for row in data:
                         candle_save(row, datetime.datetime.now())
                 logger.info(f'Finish load history: {symbol}')
