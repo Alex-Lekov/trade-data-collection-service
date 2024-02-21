@@ -3,4 +3,4 @@ loguru
 clickhouse-driver
 aioch
 pandas
-tqdm
+progressbar2

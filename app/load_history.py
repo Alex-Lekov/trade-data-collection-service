@@ -3,10 +3,10 @@ from loguru import logger
 import sys
 import datetime
 import yaml
-from tqdm import tqdm
+from progressbar import progressbar
 from decimal import Decimal
 
-from cryptofeed.exchanges import BinanceFutures
+from cryptofeed.exchanges import Binance
 import clickhouse_driver
 
 ####### Logger Configuration #########################################################
@@ -21,7 +21,7 @@ logger.add(
 )
 
 # Add a file sink with DEBUG level and compression
-logger.add("log.log", rotation="1 MB", level="DEBUG", compression="zip")
+logger.add("./logs/load_history.log", rotation="1 MB", level="DEBUG", compression="zip")
 
 ####### Load Config #########################################################
 
@@ -75,7 +75,7 @@ def get_symbols_last_date() -> dict:
 
     """
     with clickhouse_driver.Client(host='clickhouse', port=9000) as ch:
-        result = ch.execute('SELECT symbol, MIN(stop) as min_date FROM binance_data.candles GROUP BY symbol')
+        result = ch.execute('SELECT symbol, MIN(stop) as min_date FROM binance_data.candles FINAL GROUP BY symbol')
     
     symbol_last_data_dict = {}
     for res in result:
@@ -87,21 +87,57 @@ def get_symbols_last_date() -> dict:
 
 if __name__ == '__main__':
     if LOAD_HISTORY:
-        logger.info(f'Delay start by 120sec so that BD are ready')
-        time.sleep(120)
+        logger.info(f'Delay start by 2000sec so that all are ready')
+        time.sleep(2000)
         logger.info(f'START HISTORY LOAD')
+
+        ####### LOAD CONFIG #########################################################
+        with open("config.yaml", 'r') as ymlfile:
+            config = yaml.load(ymlfile, Loader=yaml.SafeLoader)
+
+        SYMBOLS_TYPE = config['SYMBOLS_TYPE']
+        TIMEFRAME = config['TIMEFRAME']
+
+        # start load top10 symbols
+        # SYMBOLS_TYPE = '-USDT-PERP'
+        SYMBOLS = [
+            "BTC",
+            "ETH",
+            "BNB",
+            "ADA",
+            "XRP",
+            "MATIC",
+            "LTC",
+            "TRX",
+            "DOT",
+            "AVAX",
+            "LINK",
+            "ATOM",
+            "UNI",
+        ]
+        for symbol in SYMBOLS:
+            logger.info(f'Load top10 SYMBOLS history: {symbol} from {START_DATE}')
+            # Loop with unknown finite number of iterations
+            for data in Binance().candles_sync(symbol+SYMBOLS_TYPE, start=START_DATE, interval=TIMEFRAME):
+                for row in data:
+                    candle_save(row, datetime.datetime.now())
+            logger.info(f'Finish load top10 history: {symbol}')
 
         # Get the last stop date for each symbol
         symbol_last_data_dict = get_symbols_last_date()
 
         # Loop through each symbol and load its history
-        for symbol, last_date in tqdm(symbol_last_data_dict.items()):
-            logger.info(f'Load history: {symbol}')
-            for data in tqdm(BinanceFutures().candles_sync(symbol, start=START_DATE, end=last_date)):
-                for row in data:
-                    candle_save(row, datetime.datetime.now())
-            logger.info(f'Finish load history: {symbol}')
-
+        for symbol, last_date in progressbar(symbol_last_data_dict.items(), redirect_stdout=True):
+            logger.info(f'Load history: {symbol} from {START_DATE} to {last_date}')
+            # Loop with unknown finite number of iterations
+            try:
+                for data in Binance().candles_sync(symbol, start=START_DATE, end=last_date, interval=TIMEFRAME):
+                    for row in data:
+                        candle_save(row, datetime.datetime.now())
+                logger.info(f'Finish load history: {symbol}')
+            except Exception as e:
+                logger.error(f'Error: {e}')
+                logger.error(f'Error: {symbol} from {START_DATE} to {last_date}')
         logger.info(f'ALL history is loaded!')
 
     else:
