@@ -191,9 +191,6 @@ def main() -> None:
     history_chunk_size = int(config.get('HISTORY_CHUNK_SIZE', DEFAULT_HISTORY_CHUNK_SIZE))
     if history_chunk_size <= 0:
         raise ValueError('HISTORY_CHUNK_SIZE must be a positive integer')
-    if history_chunk_size > 1500:
-        logger.warning('HISTORY_CHUNK_SIZE too large (%s); clamping to 1500 to satisfy exchange limits', history_chunk_size)
-        history_chunk_size = 1500
     chunk_span = timeframe_delta * history_chunk_size
 
     exchange_name = (
