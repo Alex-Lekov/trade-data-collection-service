@@ -57,6 +57,57 @@ def create_table_if_not_exists() -> None:
         ch.execute(query)
         logger.info('CREATE TABLE IF NOT EXISTS binance_data.candles')
 
+# -------- Sharding helpers and symbols watcher (hot-add only; removal via shard-restart to be added) --------
+def chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+
+async def symbols_watcher(handler: FeedHandler, symbol_type: str, timeframe: str, known_symbols: set, interval_sec: int = 60):
+    """
+    Periodically polls available symbols and hot-adds newly listed ones as shard feeds to the existing FeedHandler.
+    De-listing is only logged here; safe removal will be done via partial shard restart (not implemented in this watcher).
+
+    Args:
+        handler: Active FeedHandler instance.
+        symbol_type: Filter substring for symbols (e.g. '-USDT-PERP').
+        timeframe: Candle interval (e.g. '1m').
+        known_symbols: Mutable set of currently subscribed symbols, will be updated in-place.
+        interval_sec: Poll interval in seconds.
+    """
+    callbacks = {CANDLES: candle_callback}
+    while True:
+        try:
+            current = Binance.symbols()
+            current = [s for s in current if symbol_type in s]
+
+            current_set = set(current)
+            added = list(current_set.difference(known_symbols))
+            removed = list(known_symbols.difference(current_set))
+
+            if added:
+                logger.info(f'Watcher: detected {len(added)} newly listed symbols. Hot-adding shards.')
+                # Add in shards up to 100 symbols per feed
+                for idx, chunk in enumerate(chunks(sorted(added), 100)):
+                    logger.info(f'Watcher: add shard with {len(chunk)} symbols')
+                    handler.add_feed(Binance(symbols=chunk, channels=[CANDLES], callbacks=callbacks, candle_interval=timeframe, candle_closed_only=True))
+                known_symbols.update(added)
+
+            if removed:
+                # We only log here; actual unsubscribe is not uniformly supported.
+                # Plan: partial restart of affected shard(s) will handle removals.
+                logger.warning(f'Watcher: detected {len(removed)} delisted symbols. Will require partial shard restart to remove.')
+                # Update local view to avoid repeated logging; stream may still receive data until shard restart occurs.
+                for s in removed:
+                    if s in known_symbols:
+                        known_symbols.remove(s)
+        except Exception as e:
+            logger.error(f'Watcher error: {e}')
+
+        await asyncio.sleep(interval_sec)
+
+
 async def candle_callback(candle, receipt_timestamp) -> None:
     """Callback function that stores candle data into ClickHouse.
 
@@ -93,16 +144,7 @@ async def candle_callback(candle, receipt_timestamp) -> None:
     await ch.execute(query, {'exchange': exchange, 'symbol': symbol, 'start': start, 'stop': stop, 'close_unixtime': candle.stop, 'interval': interval, 'trades': trades, 'open': open_price, 'close': close_price, 'high': high_price, 'low': low_price, 'volume': volume, 'timestamp': timestamp, 'receipt_timestamp': receipt_timestamp})
 
 
-async def symbols_callback(candle, receipt_timestamp):
-    ''' check new symbols lists'''
-    new_symbols = list(set(Binance.symbols()))
-    new_symbols = [symbol for symbol in new_symbols if "-USDT-PERP" in symbol]
-    # logger.info(f'Update symbols')
-
-    if len(set(symbols)) != len(set(new_symbols)):
-        logger.info(f'!!! Change total symbols! old: {(len(set(symbols)))} new: {len(set(new_symbols))}')
-        asyncio.sleep(5)
-        asyncio.get_event_loop().stop()
+# symbols_callback removed: dynamic symbol management will be handled by a dedicated watcher/manager
 
 
 if __name__ == '__main__':
@@ -134,14 +176,17 @@ if __name__ == '__main__':
         loop = asyncio.get_event_loop()
         #f.add_feed(binance)
 
-        # try fix websockets.exceptions.ConnectionClosedErrorr
-        for symbol in symbols:
-            logger.info(f'ADD {symbol} feed')
-            f.add_feed(Binance(symbols=[symbol,], channels=[CANDLES,], callbacks=callbacks, candle_interval=TIMEFRAME, candle_closed_only=True))
+        # Sharded subscription: batch symbols into groups of up to 100 symbols per feed
+        for idx, chunk in enumerate(chunks(symbols, 100)):
+            logger.info(f'ADD shard {idx} feed with {len(chunk)} symbols')
+            f.add_feed(Binance(symbols=chunk, channels=[CANDLES], callbacks=callbacks, candle_interval=TIMEFRAME, candle_closed_only=True))
 
-        f.add_feed(Binance(symbols=symbols[:1], channels=[CANDLES,], callbacks={CANDLES: symbols_callback}, candle_interval=TIMEFRAME, candle_closed_only=True))
         # Start the data collection
         f.run(start_loop=False)
 
+        # Start watcher task to hot-add new symbols every 60s; removals will be handled via partial shard restart
+        known_symbols = set(symbols)
+        loop.create_task(symbols_watcher(f, SYMBOLS_TYPE, TIMEFRAME, known_symbols, interval_sec=60))
+
         loop.run_forever()
-        asyncio.sleep(5)
+        time.sleep(5)
