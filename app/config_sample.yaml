@@ -12,7 +12,7 @@ EXCHANGE: binance_futures
 HISTORY_CHUNK_SIZE: 1000
 SHARD_SIZE: 100
 WATCHER_INTERVAL_SEC: 60
-STARTUP_DELAY_SEC: 10
+STARTUP_DELAY_SEC: 30
 DATA_QUALITY_STARTUP_DELAY_SEC: 120
 
 ########################################################################################################################
