@@ -1,4 +1,4 @@
-FROM python:3.10-buster
+FROM python:3.12
 
 # Configure apt and install packages
 RUN apt-get update \
