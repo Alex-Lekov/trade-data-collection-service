@@ -4,6 +4,16 @@
 
 TIMEFRAME: '1m'
 SYMBOLS_TYPE: '-USDT-PERP'
+SYMBOLS_WHITELIST: [BTC, ADA, BCH, BNB, DOGE, ETH, SOL, XRP]
+SYMBOLS_BLACKLIST: []
+CLICKHOUSE_HOST: 'clickhouse'
+CLICKHOUSE_PORT: 9000
+EXCHANGE: binance_futures
+HISTORY_CHUNK_SIZE: 1000
+SHARD_SIZE: 100
+WATCHER_INTERVAL_SEC: 60
+STARTUP_DELAY_SEC: 10
+DATA_QUALITY_STARTUP_DELAY_SEC: 120
 
 ########################################################################################################################
 # TELEGRAM
@@ -17,4 +27,4 @@ CHAT_ID: <YOU_CHAT_ID>
 ########################################################################################################################
 
 LOAD_HISTORY: True
-START_DATE: '2023-01-01 00:00:00'
+START_DATE: '2021-01-01 00:00:00'

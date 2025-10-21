@@ -4,3 +4,6 @@ clickhouse-driver
 aioch
 pandas
 progressbar2
+jupyter
+plotly
+ipywidgets
