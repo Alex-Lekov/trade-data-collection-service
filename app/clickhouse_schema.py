@@ -197,7 +197,6 @@ INSERT_CANDLES_QUERY = f'''
     INSERT INTO {CANDLES_TABLE_FULL}
     (exchange, symbol, interval, start, stop, close_unixtime, trades, open, high, low, close, volume, timestamp, receipt_timestamp)
     VALUES
-    (%(exchange)s, %(symbol)s, %(interval)s, %(start)s, %(stop)s, %(close_unixtime)s, %(trades)s, %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, %(timestamp)s, %(receipt_timestamp)s)
 '''
 
 

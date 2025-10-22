@@ -63,6 +63,35 @@ class SymbolProgress:
     def is_done(self) -> bool:
         return self.completed_chunks >= self.total_chunks
 
+
+class RequestLimiter:
+    """Bound concurrent REST calls and enforce a minimum spacing between requests."""
+
+    def __init__(self, max_inflight: int, min_interval: float) -> None:
+        if max_inflight <= 0:
+            raise ValueError('max_inflight must be positive')
+        self._semaphore = asyncio.Semaphore(max_inflight)
+        self._min_interval = max(0.0, float(min_interval))
+        self._lock = asyncio.Lock()
+        self._last_request_ts = 0.0
+
+    @contextlib.asynccontextmanager
+    async def reserve(self):
+        await self._semaphore.acquire()
+        try:
+            if self._min_interval > 0:
+                async with self._lock:
+                    loop = asyncio.get_running_loop()
+                    now = loop.time()
+                    wait_time = self._min_interval - (now - self._last_request_ts)
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                        now = loop.time()
+                    self._last_request_ts = now
+            yield
+        finally:
+            self._semaphore.release()
+
     @property
     def succeeded(self) -> bool:
         return self.is_done and not self.errors
@@ -86,9 +115,9 @@ def candle_save(
 
     if client is None:
         with clickhouse_driver.Client(host=host, port=port) as executor:
-            executor.execute(INSERT_CANDLES_QUERY, payload)
+            executor.execute(INSERT_CANDLES_QUERY, [payload])
     else:
-        client.execute(INSERT_CANDLES_QUERY, payload)
+        client.execute(INSERT_CANDLES_QUERY, [payload])
 
 
 def build_candle_payload(
@@ -153,7 +182,7 @@ class ProgressTracker:
                 percent = (value / self.total) * 100
                 if percent - self._last_log_percent >= 5 or value == self.total:
                     self._last_log_percent = percent
-                    logger.info('History progress: %.2f%% (%d/%d)', percent, value, self.total)
+                    logger.info('History progress: {:.2f}% ({}/{})', percent, value, self.total)
 
     def finish(self) -> None:
         if self._bar:
@@ -301,7 +330,7 @@ def main() -> None:
 
         if end_cursor <= start_date_dt:
             logger.info(
-                'Skip %s: existing history (%s) covers requested range starting at %s',
+                'Skip {}: existing history ({}) covers requested range starting at {}',
                 symbol,
                 earliest_existing,
                 start_date_iso,
@@ -340,12 +369,22 @@ def main() -> None:
     fetch_retry_delay = float(config.get('HISTORY_FETCH_RETRY_DELAY_SEC', 5))
     insert_retries = int(config.get('HISTORY_INSERT_RETRIES', 3))
     insert_retry_delay = float(config.get('HISTORY_INSERT_RETRY_DELAY_SEC', 2))
+    max_inflight_requests = int(
+        config.get('HISTORY_MAX_REQUESTS_IN_FLIGHT', max(1, min(history_workers, 4)))
+    )
+    if max_inflight_requests <= 0:
+        raise ValueError('HISTORY_MAX_REQUESTS_IN_FLIGHT must be a positive integer')
+    requests_per_second = float(config.get('HISTORY_REQUESTS_PER_SECOND', 4.0))
+    min_request_interval = 1.0 / requests_per_second if requests_per_second > 0 else 0.0
+    request_limiter = RequestLimiter(max_inflight_requests, min_request_interval)
 
     logger.info(
-        'Scheduling %d history chunks across %d symbols (workers=%d)',
+        'Scheduling {} history chunks across {} symbols (workers={}, inflight<={}, min_interval={:.3f}s)',
         total_chunks,
         len(symbol_jobs),
         history_workers,
+        max_inflight_requests,
+        min_request_interval,
     )
 
     successful_symbols, failed_details = asyncio.run(
@@ -362,6 +401,7 @@ def main() -> None:
             history_chunk_size=history_chunk_size,
             exchange_name=exchange_name,
             worker_count=history_workers,
+            request_limiter=request_limiter,
             fetch_retries=fetch_retries,
             fetch_retry_delay=fetch_retry_delay,
             insert_retries=insert_retries,
@@ -404,6 +444,7 @@ async def run_history_backfill(
     history_chunk_size: int,
     exchange_name: str,
     worker_count: int,
+    request_limiter: RequestLimiter,
     fetch_retries: int,
     fetch_retry_delay: float,
     insert_retries: int,
@@ -459,7 +500,7 @@ async def run_history_backfill(
             error_summary = state.errors[-1]
             failed_details.append(f'{symbol}: {error_summary}')
             logger.error(
-                'History load failed for %s (%d/%d chunks complete): %s',
+                'History load failed for {} ({}/{}) chunks complete: {}',
                 symbol,
                 state.completed_chunks,
                 state.total_chunks,
@@ -477,7 +518,7 @@ async def run_history_backfill(
                 notifier.send('\n'.join(message_lines))
         else:
             successful_symbols.append(symbol)
-            logger.info('Finish load history: %s', symbol)
+            logger.info('Finish load history: {}', symbol)
             if notifier:
                 message_lines = [
                     'History load finished',
@@ -504,26 +545,27 @@ async def run_history_backfill(
                     end=format_ch_time(job.end),
                     interval=timeframe,
                 )
-                logger.debug(
-                    'Worker %d: symbol %s chunk #%d/%d (%s -> %s)',
-                    worker_id,
-                    job.symbol,
-                    job.index,
-                    job.total,
-                    params['start'],
-                    params['end'],
-                )
+                # logger.debug(
+                #     'Worker {}: symbol {} chunk #{}/{} ({} -> {})',
+                #     worker_id,
+                #     job.symbol,
+                #     job.index,
+                #     job.total,
+                #     params['start'],
+                #     params['end'],
+                # )
 
                 last_error: Optional[BaseException] = None
                 rows: List[Dict[str, object]] = []
                 for attempt in range(1, fetch_retries + 1):
                     try:
-                        rows = await fetch_chunk_rows(exchange, job.symbol, params)
+                        async with request_limiter.reserve():
+                            rows = await fetch_chunk_rows(exchange, job.symbol, params)
                         break
                     except Exception as exc:
                         last_error = exc
                         logger.warning(
-                            'Worker %d: fetch failed for %s chunk #%d (attempt %d/%d): %s',
+                            'Worker {}: fetch failed for {} chunk #{} (attempt {}/{}): {}',
                             worker_id,
                             job.symbol,
                             job.index,
@@ -549,7 +591,7 @@ async def run_history_backfill(
                 except Exception as exc:
                     error_text = f'insert failed: {exc}'
                     logger.error(
-                        'Worker %d: insert failed for %s chunk #%d: %s',
+                        'Worker {}: insert failed for {} chunk #{}: {}',
                         worker_id,
                         job.symbol,
                         job.index,
@@ -601,7 +643,10 @@ async def fetch_chunk_rows(
     """Download a chunk of candles and convert them into ClickHouse payloads."""
     receipt_ts = datetime.datetime.now(datetime.timezone.utc)
     rows: List[Dict[str, object]] = []
-    async for batch in exchange.candles(symbol, **params):
+    params_local = dict(params)
+    params_local.setdefault('retry_count', 0)
+    params_local.setdefault('retry_delay', 1)
+    async for batch in exchange.candles(symbol, **params_local):
         for row in batch:
             rows.append(build_candle_payload(row, receipt_ts))
     return rows
@@ -628,7 +673,7 @@ async def insert_rows(
         except Exception as exc:
             last_error = exc
             logger.warning(
-                'ClickHouse insert failed (attempt %d/%d): %s',
+                'ClickHouse insert failed (attempt {}/{}): {}',
                 attempt,
                 attempts,
                 exc,
@@ -636,7 +681,34 @@ async def insert_rows(
             await asyncio.sleep(insert_retry_delay * attempt)
 
     assert last_error is not None
-    raise last_error
+    logger.warning(
+        'Batch insert failed after {} attempts; falling back to row-by-row insert for {} candles (last error: {})',
+        attempts,
+        len(rows),
+        last_error,
+    )
+
+    for idx, payload in enumerate(rows, start=1):
+        row_error: Optional[BaseException] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                async with lock:
+                    await client.execute(INSERT_CANDLES_QUERY, [payload])
+                break
+            except Exception as exc:
+                row_error = exc
+                logger.warning(
+                    'Fallback insert failed for row {}/{} (attempt {}/{}): {}',
+                    idx,
+                    len(rows),
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                await asyncio.sleep(insert_retry_delay * attempt)
+        else:
+            assert row_error is not None
+            raise row_error
 
 
 if __name__ == '__main__':

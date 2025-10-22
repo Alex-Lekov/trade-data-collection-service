@@ -7,6 +7,7 @@ from typing import Awaitable, Callable, Iterator, List, Optional, Sequence, Set
 
 import yaml
 from aioch import Client as AIOClickHouseClient
+from clickhouse_driver import errors as ch_errors
 from cryptofeed import FeedHandler
 from cryptofeed.defines import CANDLES
 from loguru import logger
@@ -33,6 +34,8 @@ CONFIG_PATH = "config.yaml"
 DEFAULT_SHARD_SIZE = 100
 DEFAULT_WATCHER_INTERVAL_SEC = 60
 DEFAULT_STARTUP_DELAY_SEC = 10
+DEFAULT_SCHEMA_RETRY_ATTEMPTS = 12
+DEFAULT_SCHEMA_RETRY_DELAY_SEC = 5
 
 def chunks(lst: Sequence[str], chunk_size: int) -> Iterator[List[str]]:
     """Yield successive chunks from ``lst`` with at most ``chunk_size`` items.
@@ -251,22 +254,24 @@ def make_candle_callback(host: str, port: int) -> Callable[..., Awaitable[None]]
                 try:
                     await client.execute(
                         INSERT_CANDLES_QUERY,
-                        {
-                            'exchange': exchange,
-                            'symbol': symbol,
-                            'interval': interval,
-                            'start': start,
-                            'stop': stop,
-                            'close_unixtime': int(candle.stop),
-                            'trades': trades,
-                            'open': open_price,
-                            'high': high_price,
-                            'low': low_price,
-                            'close': close_price,
-                            'volume': volume,
-                            'timestamp': timestamp,
-                            'receipt_timestamp': receipt_ts,
-                        },
+                        [
+                            {
+                                'exchange': exchange,
+                                'symbol': symbol,
+                                'interval': interval,
+                                'start': start,
+                                'stop': stop,
+                                'close_unixtime': int(candle.stop),
+                                'trades': trades,
+                                'open': open_price,
+                                'high': high_price,
+                                'low': low_price,
+                                'close': close_price,
+                                'volume': volume,
+                                'timestamp': timestamp,
+                                'receipt_timestamp': receipt_ts,
+                            }
+                        ],
                     )
                     break
                 except Exception as exc:
@@ -291,6 +296,8 @@ def main() -> None:
     shard_size = int(config.get('SHARD_SIZE', DEFAULT_SHARD_SIZE))
     watcher_interval_sec = int(config.get('WATCHER_INTERVAL_SEC', DEFAULT_WATCHER_INTERVAL_SEC))
     startup_delay_sec = int(config.get('STARTUP_DELAY_SEC', DEFAULT_STARTUP_DELAY_SEC))
+    schema_retry_attempts = int(config.get('CLICKHOUSE_SCHEMA_RETRY_ATTEMPTS', DEFAULT_SCHEMA_RETRY_ATTEMPTS))
+    schema_retry_delay_sec = int(config.get('CLICKHOUSE_SCHEMA_RETRY_DELAY_SEC', DEFAULT_SCHEMA_RETRY_DELAY_SEC))
 
     logger.info(f'Delay start by {startup_delay_sec} sec so that DB are ready')
     time.sleep(startup_delay_sec)
@@ -328,7 +335,35 @@ def main() -> None:
     # Restart the capture loop whenever the handler stops (e.g., network hiccups).
     while True:
         logger.info('Start new loop')
-        ensure_schema(clickhouse_host, clickhouse_port)
+        effective_retry_attempts = max(schema_retry_attempts, 1)
+        last_error: Exception | None = None
+        for attempt in range(1, effective_retry_attempts + 1):
+            try:
+                ensure_schema(clickhouse_host, clickhouse_port)
+                last_error = None
+                break
+            except ch_errors.Error as exc:
+                if not isinstance(exc, ch_errors.NetworkError):
+                    raise
+                last_error = exc
+            except OSError as exc:
+                last_error = exc
+
+            if attempt >= effective_retry_attempts:
+                break
+
+            logger.warning(
+                f'ClickHouse not ready (attempt {attempt}/{effective_retry_attempts}): {last_error}. '
+                f'Retrying in {schema_retry_delay_sec}s.'
+            )
+            time.sleep(max(schema_retry_delay_sec, 1))
+
+        if last_error is not None:
+            logger.error(
+                f'Unable to ensure ClickHouse schema after {effective_retry_attempts} attempts: {last_error}'
+            )
+            raise last_error
+
         logger.info('ClickHouse schema ensured')
 
         symbols = filter_symbols(
