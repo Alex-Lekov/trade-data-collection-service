@@ -1,7 +1,7 @@
 import datetime
 import sys
 import time
-from typing import List, Sequence, Tuple
+from typing import List, Sequence, Tuple, Optional
 
 import clickhouse_driver
 import pandas as pd
@@ -67,7 +67,7 @@ def timeframe_to_pandas_freq(timeframe: str) -> str:
     mapping = {
         's': 'S',
         'm': 'min',  # minutes
-        'h': 'H',
+        'h': 'h',   # use lowercase to avoid FutureWarning in pandas
         'd': 'D',
         'w': 'W',
     }
@@ -209,26 +209,34 @@ def find_missing_dates(
     resample_freq: str,
     *,
     time_column: str = 'start',
+    exchange: Optional[str] = None,
 ) -> list:
     """
-    Finds missing dates for a specific symbol in a DataFrame.
-    
+    Finds missing dates for a specific (exchange, symbol) in a DataFrame.
+
     Args:
         df: The DataFrame to search for missing dates.
         symbol: The symbol for which to search for missing dates.
+        resample_freq: Pandas frequency string.
         time_column: The name of the datetime column to analyse.
+        exchange: Optional exchange filter. If provided and the column exists,
+                  gaps are computed per exact exchange to avoid cross-exchange mixing.
 
     Returns:
         A list of missing pandas timestamps representing gaps.
     """
     data_tmp = df[df.symbol == symbol].copy()
+    if exchange is not None and 'exchange' in data_tmp.columns:
+        data_tmp = data_tmp[data_tmp.exchange == exchange]
+
     if data_tmp.empty:
         return []
 
     data_tmp.sort_values(by=time_column, ascending=True, inplace=True)
 
+    # If duplicates in the same time bucket exist (not yet merged parts), drop in-memory copy
     if data_tmp.duplicated([time_column], keep=False).sum() > 0:
-        logger.info(f'duplicates found on {symbol}; dropping in-memory copy (table optimize handled separately)')
+        logger.info(f'duplicates found on {exchange or "?"}:{symbol}; dropping in-memory copy (table optimize handled separately)')
         data_tmp.drop_duplicates(subset=time_column, inplace=True)
 
     data_tmp = data_tmp.set_index(time_column, drop=False)
@@ -315,11 +323,20 @@ def notify_rollup_gap(
     ]
     message = '\n'.join(message_lines)
     if notifier:
-        notifier.send(message)
+        try:
+            notifier.send(message)
+        except Exception as exc:
+            # Avoid spamming errors (e.g., Telegram 429) — log and continue
+            logger.warning(f'Telegram notify failed: {exc}')
     logger.error(message)
 
 
 def build_rollup_backfill_query(spec: RollupSpec) -> str:
+    """
+    Построить запрос на бэκфилл агрегированных состояний в витрину.
+    ВНИМАНИЕ: без анти-джоина. Для AggregatingMergeTree дубли допустимы — они схлопнутся
+    при чтении (через *Merge) и/или после OPTIMIZE FINAL. Это повышает гарантированность заполнения gap.
+    """
     interval_expr = spec.interval_expr()
     if spec.uses_merge_states:
         open_expr = 'argMinMergeState(open)'
@@ -353,34 +370,19 @@ def build_rollup_backfill_query(spec: RollupSpec) -> str:
 
     return f'''
         INSERT INTO {spec.table_full}
-        SELECT agg.*
-        FROM (
-            SELECT
-                exchange,
-                symbol,
-                {interval_expr} AS candle_start,
-                {open_expr} AS open,
-                {high_expr} AS high,
-                {low_expr} AS low,
-                {close_expr} AS close,
-                {volume_expr} AS volume,
-                {trades_expr} AS trades
-            FROM {spec.source_table_full}
-            WHERE {where_clause}
-            GROUP BY exchange, symbol, candle_start
-        ) AS agg
-        LEFT JOIN (
-            SELECT exchange, symbol, candle_start
-            FROM {spec.table_full}
-            WHERE exchange = %(exchange)s
-              AND symbol = %(symbol)s
-              AND candle_start >= %(start)s
-              AND candle_start < %(end)s
-        ) AS existing
-        ON agg.exchange = existing.exchange
-           AND agg.symbol = existing.symbol
-           AND agg.candle_start = existing.candle_start
-        WHERE existing.exchange IS NULL
+        SELECT
+            exchange,
+            symbol,
+            {interval_expr} AS candle_start,
+            {open_expr} AS open,
+            {high_expr} AS high,
+            {low_expr} AS low,
+            {close_expr} AS close,
+            {volume_expr} AS volume,
+            {trades_expr} AS trades
+        FROM {spec.source_table_full}
+        WHERE {where_clause}
+        GROUP BY exchange, symbol, candle_start
     '''
 def backfill_rollup_range(
     ch: clickhouse_driver.Client,
@@ -391,15 +393,37 @@ def backfill_rollup_range(
     window_end_exclusive: datetime.datetime,
     expected_intervals: int,
 ) -> None:
-    query = build_rollup_backfill_query(spec)
+    """
+    Перезапуск диапазона витрины после закрытия пропусков в базе:
+    1) Удаляем старые агрегаты (exchange, symbol) в окне из таблицы витрины (ALTER ... DELETE).
+    2) Заново строим агрегаты из источника и вставляем.
+    3) Проверяем, что число интервалов соответствует ожидаемому; при нехватке — OPTIMIZE FINAL и повторная проверка.
+    """
     params = {
         'exchange': exchange,
         'symbol': symbol,
         'start': window_start,
         'end': window_end_exclusive,
     }
+
+    # 1) Жёсткое удаление диапазона из витрины (мутация асинхронна)
+    delete_query = f'''
+        ALTER TABLE {spec.table_full}
+        DELETE WHERE exchange = %(exchange)s
+          AND symbol = %(symbol)s
+          AND candle_start >= %(start)s
+          AND candle_start < %(end)s
+    '''
     try:
-        ch.execute(query, params)
+        ch.execute(delete_query, params)
+        logger.info(f'Deleted old rollup range in {spec.table_full} for {symbol} [{window_start}, {window_end_exclusive})')
+    except Exception as del_exc:
+        logger.warning(f'Failed to delete old rollup range in {spec.table_full} for {exchange}:{symbol} [{window_start}, {window_end_exclusive}): {del_exc}')
+
+    # 2) Пересчёт и вставка агрегатов из источника
+    insert_query = build_rollup_backfill_query(spec)
+    try:
+        ch.execute(insert_query, params)
     except Exception as exc:
         logger.error(
             'Failed to recalc rollup %s for %s (%s -> %s): %s',
@@ -410,28 +434,51 @@ def backfill_rollup_range(
             exc,
         )
         if notifier:
-            notifier.send(
-                '\n'.join(
-                    [
-                        f'Rollup recalculation failed ({spec.table_full})',
-                        '------------------------------',
-                        f'Symbol : {symbol}',
-                        f'From   : {window_start}',
-                        f'To     : {window_end_exclusive}',
-                        f'Error  : {exc}',
-                    ]
+            try:
+                notifier.send(
+                    '\n'.join(
+                        [
+                            f'Rollup recalculation failed ({spec.table_full})',
+                            '------------------------------',
+                            f'Symbol : {symbol}',
+                            f'From   : {window_start}',
+                            f'To     : {window_end_exclusive}',
+                            f'Error  : {exc}',
+                        ]
+                    )
                 )
-            )
+            except Exception as notify_exc:
+                logger.warning(f'Telegram notify failed: {notify_exc}')
         return
 
-    logger.info(
-        'Recalculated %s for %s: %s intervals [%s, %s)',
-        spec.table_full,
-        symbol,
-        expected_intervals,
-        window_start,
-        window_end_exclusive,
-    )
+    # 3) Верификация заполнения
+    count_query = f'''
+        SELECT uniqExact(candle_start)
+        FROM {spec.table_full}
+        WHERE exchange = %(exchange)s
+          AND symbol = %(symbol)s
+          AND candle_start >= %(start)s
+          AND candle_start < %(end)s
+    '''
+    try:
+        count_rows = ch.execute(count_query, params)
+        filled = int(count_rows[0][0]) if count_rows and count_rows[0] and count_rows[0][0] is not None else 0
+        if filled < expected_intervals:
+            logger.warning(f'Backfill verification short: {spec.table_full} {exchange}:{symbol} got {filled}/{expected_intervals} in [{window_start}, {window_end_exclusive}) — trying OPTIMIZE FINAL')
+            try:
+                ch.execute(f'OPTIMIZE TABLE {spec.table_full} FINAL')
+                count_rows2 = ch.execute(count_query, params)
+                filled2 = int(count_rows2[0][0]) if count_rows2 and count_rows2[0] and count_rows2[0][0] is not None else 0
+                if filled2 < expected_intervals:
+                    logger.error(f'Backfill still incomplete after OPTIMIZE: {spec.table_full} {exchange}:{symbol} {filled2}/{expected_intervals} in [{window_start}, {window_end_exclusive})')
+                else:
+                    logger.info(f'Backfill complete after OPTIMIZE: {spec.table_full} for {symbol}: {filled2} intervals [{window_start}, {window_end_exclusive})')
+            except Exception as opt_exc:
+                logger.warning(f'OPTIMIZE FINAL failed for {spec.table_full}: {opt_exc}')
+        else:
+            logger.info(f"Recalculated {spec.table_full} for {symbol}: {expected_intervals} intervals [{window_start}, {window_end_exclusive})")
+    except Exception as verify_exc:
+        logger.warning(f'Backfill verification failed for {spec.table_full} {exchange}:{symbol}: {verify_exc}')
 
 
 def backfill_rollup_gaps(
@@ -451,15 +498,22 @@ def backfill_rollup_gaps(
 
 def compute_rollup_source_window(
     ch: clickhouse_driver.Client,
+    exchange: str,
     symbol: str,
     spec: RollupSpec,
     freq: str,
 ) -> Tuple[datetime.datetime, datetime.datetime] | None:
-    """Determine the full time window available in the source data for ``symbol``."""
+    """Determine the full time window available in the source data for exact (exchange, symbol)."""
 
     result = ch.execute(
-        'SELECT min(start), max(start) FROM binance_data.candles WHERE symbol = %(symbol)s AND interval = %(interval)s',
-        {'symbol': symbol, 'interval': BASE_INTERVAL},
+        '''
+        SELECT min(start), max(start)
+        FROM binance_data.candles
+        WHERE exchange = %(exchange)s
+          AND symbol = %(symbol)s
+          AND interval = %(interval)s
+        ''',
+        {'exchange': exchange, 'symbol': symbol, 'interval': BASE_INTERVAL},
     )
     if not result:
         return None
@@ -479,35 +533,30 @@ def process_rollup_symbol(
     ch: clickhouse_driver.Client,
     spec: RollupSpec,
     df: pd.DataFrame,
+    exchange: str,
     symbol: str,
     freq: str,
 ) -> None:
-    symbol_rows = df[df.symbol == symbol]
-    existing_exchange = None
-    if not symbol_rows.empty:
-        exchange_values = symbol_rows.exchange.dropna()
-        if not exchange_values.empty:
-            existing_exchange = exchange_values.iloc[0]
+    """
+    Process a single (exchange, symbol) in a rollup table:
+    - detect gaps per exact exchange
+    - backfill missing aggregates from the appropriate source
+    """
+    symbol_rows = df[(df.symbol == symbol) & (df.exchange == exchange)]
 
-    symbol_missing = find_missing_dates(df, symbol, freq, time_column='candle_start')
-    symbol_exchange = resolve_exchange_for_symbol(
-        ch,
-        symbol,
-        existing_exchange=existing_exchange,
-    )
+    # Compute missing dates strictly per exchange to avoid cross-exchange contamination
+    symbol_missing = find_missing_dates(df, symbol, freq, time_column='candle_start', exchange=exchange)
 
     if symbol_missing:
         first = symbol_missing[0].to_pydatetime()
         last = symbol_missing[-1].to_pydatetime()
         notify_rollup_gap(spec, symbol, first, last, len(symbol_missing))
-        if not symbol_exchange:
-            logger.error('Cannot infer exchange for %s; skip rollup backfill %s', symbol, spec.table_full)
-            return
-        backfill_rollup_gaps(ch, spec, symbol_exchange, symbol, symbol_missing)
+        backfill_rollup_gaps(ch, spec, exchange, symbol, symbol_missing)
         return
 
+    # If there is no data at all for this pair in the rollup, try to backfill the whole available range
     if symbol_rows.empty:
-        source_window = compute_rollup_source_window(ch, symbol, spec, freq)
+        source_window = compute_rollup_source_window(ch, exchange, symbol, spec, freq)
         if not source_window:
             return
         start_aligned, end_aligned = source_window
@@ -516,13 +565,10 @@ def process_rollup_symbol(
         if count <= 0:
             return
         notify_rollup_gap(spec, symbol, start_aligned, end_aligned - step, count)
-        if not symbol_exchange:
-            logger.error('Cannot infer exchange for %s; skip rollup backfill %s', symbol, spec.table_full)
-            return
         backfill_rollup_range(
             ch,
             spec,
-            symbol_exchange,
+            exchange,
             symbol,
             start_aligned,
             end_aligned,
@@ -545,37 +591,42 @@ def check_rollup_last_data(ch: clickhouse_driver.Client, depth: int = 2000) -> N
             continue
         df = rollup_data_to_df(result)
         freq = timeframe_to_pandas_freq(spec.label)
-        for symbol in df.symbol.unique():
-            process_rollup_symbol(ch, spec, df, symbol, freq)
+        # Work per exact (exchange, symbol)
+        if not df.empty:
+            pairs = df[['exchange', 'symbol']].dropna().drop_duplicates()
+            for exchange, symbol in pairs.itertuples(index=False, name=None):
+                process_rollup_symbol(ch, spec, df, exchange, symbol, freq)
 
 
-def fetch_all_symbols(ch: clickhouse_driver.Client) -> List[str]:
-    rows = ch.execute('SELECT DISTINCT symbol FROM binance_data.candles')
-    return [row[0] for row in rows if row and row[0]]
+def fetch_all_exchange_symbols(ch: clickhouse_driver.Client) -> List[Tuple[str, str]]:
+    """Return all (exchange, symbol) pairs present in base candles table."""
+    rows = ch.execute('SELECT DISTINCT exchange, symbol FROM binance_data.candles')
+    return [(row[0], row[1]) for row in rows if row and row[0] and row[1]]
 
 
 def check_rollup_full_data() -> None:
     with clickhouse_driver.Client(host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT) as ch:
-        symbols = fetch_all_symbols(ch)
-        if not symbols:
+        pairs = fetch_all_exchange_symbols(ch)
+        if not pairs:
             logger.info('No symbols found in base table; skipping rollup validation')
             return
 
         for spec in ROLLUP_SPECS:
             logger.info('Validate materialized view %s', spec.table_full)
             freq = timeframe_to_pandas_freq(spec.label)
-            for symbol in progressbar(symbols):
+            for exchange, symbol in progressbar(pairs):
                 result = ch.execute(
                     f'''
                         SELECT exchange, symbol, candle_start
                         FROM {spec.table_full}
-                        WHERE symbol = %(symbol)s
+                        WHERE exchange = %(exchange)s
+                          AND symbol = %(symbol)s
                         ORDER BY candle_start ASC
                     ''',
-                    {'symbol': symbol},
+                    {'exchange': exchange, 'symbol': symbol},
                 )
                 df = rollup_data_to_df(result)
-                process_rollup_symbol(ch, spec, df, symbol, freq)
+                process_rollup_symbol(ch, spec, df, exchange, symbol, freq)
 
 def check_missing_last_data(ch: clickhouse_driver.Client, depth: int = 3000) -> None:
     """
