@@ -233,11 +233,15 @@ def find_missing_dates(
         return []
 
     data_tmp.sort_values(by=time_column, ascending=True, inplace=True)
-
-    # If duplicates in the same time bucket exist (not yet merged parts), drop in-memory copy
-    if data_tmp.duplicated([time_column], keep=False).sum() > 0:
-        logger.info(f'duplicates found on {exchange or "?"}:{symbol}; dropping in-memory copy (table optimize handled separately)')
-        data_tmp.drop_duplicates(subset=time_column, inplace=True)
+    
+    # Обеспечиваем уникальность индекса для resample: схлопываем дубликаты в памяти без логов
+    # Это не влияет на ClickHouse и нужно только для корректной работы pandas
+    # data_tmp = (
+    #     data_tmp.groupby(time_column, as_index=False, sort=False)
+    #             .last()
+    # )
+    # drop duplicates in place without logging
+    data_tmp.drop_duplicates(subset=time_column, inplace=True)
 
     data_tmp = data_tmp.set_index(time_column, drop=False)
     # Reindex the data by time
