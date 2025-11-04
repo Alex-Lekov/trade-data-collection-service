@@ -19,7 +19,8 @@ DATA_QUALITY_STARTUP_DELAY_SEC: 120
 ########################################################################################################################
 # TELEGRAM
 ########################################################################################################################
-
+# Set TELEGRAM: false to fully disable Telegram notifications across services.
+TELEGRAM: True
 TELEGRAM_TOKEN: <YOU_TELEGRAM_TOKEN>
 CHAT_ID: <YOU_CHAT_ID>
 

@@ -12,7 +12,7 @@ from load_history import candle_save
 from progressbar import progressbar
 from telegram_notifier import TelegramNotifier
 
-from clickhouse_schema import ROLLUP_SPECS, BASE_INTERVAL, RollupSpec
+from clickhouse_schema import ROLLUP_SPECS, BASE_INTERVAL, RollupSpec, CANDLES_TABLE_FULL
 from exchange_factory import get_exchange_class
 
 
@@ -115,7 +115,7 @@ def check_last_data_recording(ch: clickhouse_driver.Client) -> None:
     Args:
     ch: A ClickHouse client object.
     """
-    query = f'SELECT * FROM binance_data.candles FINAL ORDER BY timestamp DESC LIMIT 400'
+    query = f"SELECT * FROM {CANDLES_TABLE_FULL} FINAL WHERE interval = '{BASE_INTERVAL}' ORDER BY timestamp DESC LIMIT 400"
     result = ch.execute(query)
     if not result:
         logger.error(f'No result from clickhouse!')
@@ -298,7 +298,7 @@ def resolve_exchange_for_symbol(
     if existing_exchange:
         return existing_exchange
     result = ch.execute(
-        'SELECT exchange FROM binance_data.candles WHERE symbol = %(symbol)s AND interval = %(interval)s ORDER BY start DESC LIMIT 1',
+        f'SELECT exchange FROM {CANDLES_TABLE_FULL} WHERE symbol = %(symbol)s AND interval = %(interval)s ORDER BY start DESC LIMIT 1',
         {'symbol': symbol, 'interval': BASE_INTERVAL},
     )
     if not result:
@@ -510,9 +510,9 @@ def compute_rollup_source_window(
     """Determine the full time window available in the source data for exact (exchange, symbol)."""
 
     result = ch.execute(
-        '''
+        f'''
         SELECT min(start), max(start)
-        FROM binance_data.candles
+        FROM {CANDLES_TABLE_FULL}
         WHERE exchange = %(exchange)s
           AND symbol = %(symbol)s
           AND interval = %(interval)s
@@ -604,7 +604,7 @@ def check_rollup_last_data(ch: clickhouse_driver.Client, depth: int = 2000) -> N
 
 def fetch_all_exchange_symbols(ch: clickhouse_driver.Client) -> List[Tuple[str, str]]:
     """Return all (exchange, symbol) pairs present in base candles table."""
-    rows = ch.execute('SELECT DISTINCT exchange, symbol FROM binance_data.candles')
+    rows = ch.execute(f'SELECT DISTINCT exchange, symbol FROM {CANDLES_TABLE_FULL}')
     return [(row[0], row[1]) for row in rows if row and row[0] and row[1]]
 
 
@@ -640,7 +640,7 @@ def check_missing_last_data(ch: clickhouse_driver.Client, depth: int = 3000) -> 
         ch: A ClickHouse client object.
         depth: The number of records to check for missing data.
     """
-    query = f'SELECT * FROM binance_data.candles FINAL ORDER BY timestamp DESC LIMIT {depth}'
+    query = f"SELECT * FROM {CANDLES_TABLE_FULL} FINAL WHERE interval = '{BASE_INTERVAL}' ORDER BY timestamp DESC LIMIT {depth}"
     result = ch.execute(query)
     df = data_to_df(result)
 
@@ -655,12 +655,12 @@ def check_missing_full_data() -> None:
     Checks for missing data in the full data set in ClickHouse.
     """
     with clickhouse_driver.Client(host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT) as ch:
-        query = f'SELECT * FROM binance_data.candles FINAL ORDER BY timestamp DESC LIMIT 4000'
+        query = f"SELECT * FROM {CANDLES_TABLE_FULL} FINAL WHERE interval = '{BASE_INTERVAL}' ORDER BY timestamp DESC LIMIT 4000"
         result = ch.execute(query)
         df = data_to_df(result)
 
         for symbol in progressbar(df.symbol.unique()):
-            query = '''SELECT * FROM binance_data.candles FINAL WHERE symbol = %(symbol)s'''
+            query = f"SELECT * FROM {CANDLES_TABLE_FULL} FINAL WHERE symbol = %(symbol)s AND interval = '{BASE_INTERVAL}'"
             result = ch.execute(query, {'symbol': symbol,})
 
             df = data_to_df(result)

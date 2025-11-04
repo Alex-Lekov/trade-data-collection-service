@@ -22,11 +22,11 @@ _CONFIG = _load_config()
 DATABASE_NAME = str(_CONFIG.get('EXCHANGE', 'binance_futures'))
 # Base table name is derived from TIMEFRAME value (e.g., '1m' -> 'candles_1m')
 TIMEFRAME = str(_CONFIG.get('TIMEFRAME', '1m')).lower()
-CANDLES_TABLE = f'candles_{TIMEFRAME}'
+CANDLES_TABLE = f'candles_raw_{TIMEFRAME}'
 CANDLES_TABLE_FULL = f'{DATABASE_NAME}.{CANDLES_TABLE}'
 # Use TIMEFRAME as the base interval for rollups and views
 BASE_INTERVAL = TIMEFRAME
-ROLLUP_MINUTES = (5, 15, 30, 60, 120, 240, 1440)
+ROLLUP_MINUTES = (1, 5, 15, 30, 60, 120, 240, 1440)
 
 
 @dataclass(frozen=True)

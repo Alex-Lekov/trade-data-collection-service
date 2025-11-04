@@ -7,7 +7,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Any
 
 import clickhouse_driver
 from aioch import Client as AIOClickHouseClient
@@ -95,6 +95,52 @@ class RequestLimiter:
     @property
     def succeeded(self) -> bool:
         return self.is_done and not self.errors
+
+
+async def _await_maybe(result) -> None:
+    if result is None:
+        return
+    try:
+        import inspect
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:
+        logger.warning('Await-maybe failed: {}', exc)
+
+
+async def _graceful_shutdown(target: Any, *, label: str) -> None:
+    """
+    Try to gracefully close/stop/shutdown a target object, awaiting when needed.
+    Additionally attempts to close embedded aiohttp sessions if present.
+    """
+    import inspect
+
+    methods_to_try = ('shutdown', 'close', 'stop', 'disconnect')
+    for name in methods_to_try:
+        fn = getattr(target, name, None)
+        if not callable(fn):
+            continue
+        try:
+            logger.debug('Shutdown {}: call {}()', label, name)
+            await _await_maybe(fn())
+            logger.debug('Shutdown {}: {}() done', label, name)
+            break
+        except Exception as exc:
+            logger.warning('Shutdown {}: {}() raised: {}', label, name, exc)
+
+    # Try to close embedded aiohttp session if exposed
+    session = getattr(target, 'session', None)
+    if session is not None:
+        try:
+            # Avoid importing aiohttp directly; use duck-typing
+            closed = getattr(session, 'closed', None)
+            do_close = getattr(session, 'close', None)
+            if callable(do_close) and (closed is None or (isinstance(closed, bool) and not closed)):
+                logger.debug('Shutdown {}: closing embedded session', label)
+                await _await_maybe(do_close())
+                logger.debug('Shutdown {}: embedded session closed', label)
+        except Exception as exc:
+            logger.warning('Shutdown {}: embedded session close failed: {}', label, exc)
 
 
 def candle_save(
@@ -612,11 +658,8 @@ async def run_history_backfill(
 
                 queue.task_done()
         finally:
-            closer = getattr(exchange, 'close', None)
-            if callable(closer):
-                result = closer()
-                if asyncio.iscoroutine(result):
-                    await result
+            # Graceful shutdown to avoid unclosed aiohttp sessions / un-awaited coroutines
+            await _graceful_shutdown(exchange, label=f'exchange worker {worker_id}')
 
     workers = [asyncio.create_task(worker(idx + 1)) for idx in range(worker_count)]
     await queue.join()
@@ -628,11 +671,14 @@ async def run_history_backfill(
 
     progress.finish()
 
-    disconnect = getattr(client, 'disconnect', None)
-    if callable(disconnect):
-        result = disconnect()
-        if asyncio.iscoroutine(result):
-            await result
+    # Try close() first, then disconnect(), and await if needed
+    closer = getattr(client, 'close', None)
+    if callable(closer):
+        await _await_maybe(closer())
+    else:
+        disconnect = getattr(client, 'disconnect', None)
+        if callable(disconnect):
+            await _await_maybe(disconnect())
 
     # Ensure any symbols that never reached finalize are accounted for.
     for symbol in jobs.keys():
