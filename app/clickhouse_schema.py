@@ -5,11 +5,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import clickhouse_driver
+import os
+import yaml
 
-DATABASE_NAME = 'binance_data'
-CANDLES_TABLE = 'candles'
+def _load_config() -> dict:
+    """Load config once at import time to parameterize DB and base table names."""
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        with open(config_path, 'r') as fh:
+            return yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        return {}
+
+_CONFIG = _load_config()
+# Use EXCHANGE value as the ClickHouse database name (e.g., 'binance_futures')
+DATABASE_NAME = str(_CONFIG.get('EXCHANGE', 'binance_futures'))
+# Base table name is derived from TIMEFRAME value (e.g., '1m' -> 'candles_1m')
+TIMEFRAME = str(_CONFIG.get('TIMEFRAME', '1m')).lower()
+CANDLES_TABLE = f'candles_{TIMEFRAME}'
 CANDLES_TABLE_FULL = f'{DATABASE_NAME}.{CANDLES_TABLE}'
-BASE_INTERVAL = '1m'
+# Use TIMEFRAME as the base interval for rollups and views
+BASE_INTERVAL = TIMEFRAME
 ROLLUP_MINUTES = (5, 15, 30, 60, 120, 240, 1440)
 
 
@@ -90,6 +106,19 @@ def build_rollup_specs() -> tuple[RollupSpec, ...]:
 ROLLUP_SPECS = build_rollup_specs()
 
 CREATE_DATABASE_QUERY = f'CREATE DATABASE IF NOT EXISTS {DATABASE_NAME}'
+
+def ensure_database_exists(config: dict) -> None:
+    """
+    Ensure ClickHouse database exists. Connect without selecting a database.
+    Emits a minimal startup log to stdout.
+    """
+    host = config.get('CLICKHOUSE_HOST', 'clickhouse')
+    port = int(config.get('CLICKHOUSE_PORT', 9000))
+    # Database name now derives from EXCHANGE
+    db = str(config.get('EXCHANGE', DATABASE_NAME))
+    with clickhouse_driver.Client(host=host, port=port) as client:
+        client.execute(f"CREATE DATABASE IF NOT EXISTS {db}")
+    print(f"ClickHouse database '{db}' is ready")
 
 CREATE_CANDLES_TABLE_QUERY = f'''
     CREATE TABLE IF NOT EXISTS {CANDLES_TABLE_FULL} (

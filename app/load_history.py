@@ -25,7 +25,7 @@ from data_collector import (
     filter_symbols,
     load_config,
 )
-from clickhouse_schema import INSERT_CANDLES_QUERY
+from clickhouse_schema import INSERT_CANDLES_QUERY, CANDLES_TABLE_FULL, ensure_database_exists
 from exchange_factory import get_exchange_class
 from telegram_notifier import TelegramNotifier
 
@@ -238,7 +238,7 @@ def fetch_symbol_earliest_start(
 
     query = (
         'SELECT symbol, MIN(start) '
-        'FROM binance_data.candles FINAL '
+        f'FROM {CANDLES_TABLE_FULL} FINAL '
         'WHERE exchange = %(exchange)s AND interval = %(interval)s '
         'GROUP BY symbol'
     )
@@ -274,6 +274,8 @@ def main() -> None:
     blacklist = config.get('SYMBOLS_BLACKLIST') or []
     clickhouse_host = config.get('CLICKHOUSE_HOST', DEFAULT_CLICKHOUSE_HOST)
     clickhouse_port = int(config.get('CLICKHOUSE_PORT', DEFAULT_CLICKHOUSE_PORT))
+    # Database name now derives from EXCHANGE (e.g., 'binance_futures')
+    clickhouse_db = str(config.get('EXCHANGE', 'binance_futures'))
     timeframe_delta = parse_timeframe_delta(timeframe)
     history_chunk_size = int(config.get('HISTORY_CHUNK_SIZE', DEFAULT_HISTORY_CHUNK_SIZE))
     if history_chunk_size <= 0:
@@ -289,6 +291,8 @@ def main() -> None:
 
     logger.info(f'Delay start by {HISTORY_STARTUP_DELAY_SEC} sec so that all are ready')
     time.sleep(HISTORY_STARTUP_DELAY_SEC)
+    ensure_database_exists(config)
+    logger.info(f"ClickHouse database '{clickhouse_db}' is ready")
     logger.info('START HISTORY LOAD')
 
     notifier = TelegramNotifier.from_config(config)
@@ -406,6 +410,7 @@ def main() -> None:
             fetch_retry_delay=fetch_retry_delay,
             insert_retries=insert_retries,
             insert_retry_delay=insert_retry_delay,
+            db_name=clickhouse_db,
         )
     )
 
@@ -449,6 +454,7 @@ async def run_history_backfill(
     fetch_retry_delay: float,
     insert_retries: int,
     insert_retry_delay: float,
+    db_name: str,
 ) -> tuple[List[str], List[str]]:
     """Execute backfill workload concurrently and return success/failure summaries."""
 
@@ -483,7 +489,7 @@ async def run_history_backfill(
             ]
             notifier.send('\n'.join(message_lines))
 
-    client = AIOClickHouseClient(host=clickhouse_host, port=clickhouse_port)
+    client = AIOClickHouseClient(host=clickhouse_host, port=clickhouse_port, database=db_name)
     insert_lock = asyncio.Lock()
     completed_chunks = 0
     completed_lock = asyncio.Lock()

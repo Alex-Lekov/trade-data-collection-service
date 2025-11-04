@@ -13,7 +13,7 @@ from cryptofeed.defines import CANDLES
 from loguru import logger
 #from asynch import connect
 
-from clickhouse_schema import INSERT_CANDLES_QUERY, ensure_schema
+from clickhouse_schema import INSERT_CANDLES_QUERY, ensure_schema, ensure_database_exists
 from exchange_factory import create_exchange, get_exchange_class
 from telegram_notifier import TelegramNotifier
 
@@ -180,7 +180,7 @@ def load_config(path: str = CONFIG_PATH) -> dict:
         return yaml.load(ymlfile, Loader=yaml.SafeLoader) or {}
 
 
-def make_candle_callback(host: str, port: int) -> Callable[..., Awaitable[None]]:
+def make_candle_callback(host: str, port: int, database: str) -> Callable[..., Awaitable[None]]:
     """Build an async candle handler bound to the given ClickHouse endpoint.
 
     Args:
@@ -198,7 +198,7 @@ def make_candle_callback(host: str, port: int) -> Callable[..., Awaitable[None]]
     async def get_client() -> AIOClickHouseClient:
         client = client_holder['client']
         if client is None:
-            client = AIOClickHouseClient(host=host, port=port)
+            client = AIOClickHouseClient(host=host, port=port, database=database)
             client_holder['client'] = client
         return client
 
@@ -310,6 +310,8 @@ def main() -> None:
 
     clickhouse_host = config.get('CLICKHOUSE_HOST', DEFAULT_CLICKHOUSE_HOST)
     clickhouse_port = int(config.get('CLICKHOUSE_PORT', DEFAULT_CLICKHOUSE_PORT))
+    # Database name now derives from EXCHANGE (e.g., 'binance_futures')
+    clickhouse_db = str(config.get('EXCHANGE', 'binance_futures'))
 
     exchange_name = (
         config.get('COLLECTOR_EXCHANGE')
@@ -328,7 +330,11 @@ def main() -> None:
             preview += f' (+{extras} more)'
         return preview
 
-    candle_handler = make_candle_callback(clickhouse_host, clickhouse_port)
+    # Ensure database exists before any schema/table operations
+    ensure_database_exists(config)
+    logger.info(f"ClickHouse database '{clickhouse_db}' is ready")
+
+    candle_handler = make_candle_callback(clickhouse_host, clickhouse_port, clickhouse_db)
     notifier = TelegramNotifier.from_config(config)
     startup_notified = False
 

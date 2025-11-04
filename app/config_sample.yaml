@@ -8,6 +8,7 @@ SYMBOLS_WHITELIST: [BTC, ADA, BCH, BNB, DOGE, ETH, SOL, XRP]
 SYMBOLS_BLACKLIST: []
 CLICKHOUSE_HOST: 'clickhouse'
 CLICKHOUSE_PORT: 9000
+# Database name now derives from EXCHANGE (e.g., EXCHANGE=binance_futures -> DB=binance_futures)
 EXCHANGE: binance_futures
 HISTORY_CHUNK_SIZE: 1000
 SHARD_SIZE: 100
