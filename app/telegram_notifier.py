@@ -19,9 +19,18 @@ class TelegramNotifier:
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any], *, timeout: float = 10.0) -> Optional["TelegramNotifier"]:
-        """Build a notifier when bot credentials are present in the config."""
-        token = (config or {}).get("TELEGRAM_TOKEN")
-        chat_id = (config or {}).get("CHAT_ID")
+        """Build a notifier when bot credentials are present in the config.
+        
+        Respect config flag TELEGRAM: false to disable notifications entirely.
+        """
+        cfg = config or {}
+        enabled = cfg.get("TELEGRAM", True)
+        if enabled is False:
+            logger.debug("Telegram notifier explicitly disabled by config (TELEGRAM: false).")
+            return None
+
+        token = cfg.get("TELEGRAM_TOKEN")
+        chat_id = cfg.get("CHAT_ID")
         if not token or not chat_id:
             logger.debug("Telegram notifier not configured (missing token or chat id).")
             return None
